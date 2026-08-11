@@ -499,9 +499,7 @@ function openDrawer(f){
           </div>
           <div class="dz-status" id="dzStatus"></div>
         </div>
-        ${existingNote.trim()
-          ? `<div class="md-note" id="mdNote"><div class="note-head"><span class="nh-title">Research note</span></div>${renderMarkdown(existingNote)}</div>`
-          : `<div class="md-note"><div class="note-head"><span class="nh-title">Research note</span></div><div class="note-missing">No note yet — drop a Markdown file above to create one.</div></div>`}
+        ${renderNotePanel(iso, 'Research note', existingNote, 'No note yet — drop a Markdown file above or edit to create one.')}
       </div>`;
   } else { drawerContent.innerHTML=buildSnapshot(rec); }
   drawer.classList.add('open');
@@ -572,13 +570,109 @@ function buildNote(r){
       </div>
       <div class="dz-status" id="dzStatus"></div>
     </div>`;
-  if(!md || !md.trim()){
-    return dz + `<div class="md-note"><div class="note-head"><span class="nh-title">Full research note</span></div><div class="note-missing">No research note yet for this country.</div></div>`;
-  }
-  return dz + `<div class="md-note" id="mdNote">
-    <div class="note-head"><span class="nh-title">Full research note</span></div>
-    ${renderMarkdown(md)}
+  return dz + renderNotePanel(r.iso3, 'Full research note', md, 'No research note yet for this country.');
+}
+
+/* View-mode research note panel with Edit control. */
+function renderNotePanel(iso, title, md, missingMsg){
+  const code = String(iso||'').toUpperCase();
+  const body = (md && String(md).trim())
+    ? renderMarkdown(md)
+    : `<div class="note-missing">${missingMsg||'No research note yet.'}</div>`;
+  return `<div class="md-note" id="mdNote" data-iso="${code}">
+    <div class="note-head">
+      <span class="nh-title">${title}</span>
+      <div class="note-actions">
+        <button type="button" class="btn-note" data-note-action="edit" data-iso="${code}">Edit note</button>
+      </div>
+    </div>
+    <div class="note-status" id="noteStatus" hidden></div>
+    <div class="note-body">${body}</div>
   </div>`;
+}
+
+function setNoteStatus(msg, cls){
+  const s=document.getElementById('noteStatus');
+  if(!s) return;
+  if(!msg){ s.hidden=true; s.textContent=''; s.className='note-status'; return; }
+  s.hidden=false;
+  s.textContent=msg;
+  s.className='note-status'+(cls?(' '+cls):'');
+}
+
+function startNoteEdit(iso){
+  const code = String(iso||'').toUpperCase();
+  const panel = document.getElementById('mdNote');
+  if(!panel || !code) return;
+  const md = (typeof COUNTRY_MARKDOWN!=='undefined' && COUNTRY_MARKDOWN[code]) ? COUNTRY_MARKDOWN[code] : '';
+  panel.classList.add('editing');
+  panel.innerHTML = `
+    <div class="note-head">
+      <span class="nh-title">Edit research note</span>
+      <div class="note-actions">
+        <button type="button" class="btn-note" data-note-action="cancel" data-iso="${code}">Cancel</button>
+        <button type="button" class="btn-note btn-note-primary" data-note-action="save" data-iso="${code}">Save</button>
+      </div>
+    </div>
+    <div class="note-status" id="noteStatus" hidden></div>
+    <textarea class="note-editor" id="noteEditor" spellcheck="true" aria-label="Research note markdown"></textarea>
+    <div class="note-preview-label">Preview</div>
+    <div class="note-preview" id="notePreview"></div>`;
+  const ta = document.getElementById('noteEditor');
+  const preview = document.getElementById('notePreview');
+  ta.value = md;
+  const refreshPreview = ()=>{
+    const v = ta.value;
+    preview.innerHTML = v.trim() ? renderMarkdown(v) : '<div class="note-missing">Nothing to preview yet.</div>';
+  };
+  ta.addEventListener('input', refreshPreview);
+  refreshPreview();
+  ta.focus();
+}
+
+function cancelNoteEdit(iso){
+  const code = String(iso||'').toUpperCase();
+  const f = world && world.find(ft=>featISO(ft)===code);
+  if(!f) return;
+  const wasWide = drawer.classList.contains('wide');
+  const detailOpen = !!(document.getElementById('detailBlock') && document.getElementById('detailBlock').classList.contains('open'));
+  openDrawer(f);
+  if(wasWide || detailOpen){
+    const d=document.getElementById('detailBlock'), b=document.getElementById('expandBtn');
+    if(d && !d.classList.contains('open')){
+      d.classList.add('open');
+      if(b){ b.classList.add('open'); b.querySelector('span').textContent='Hide full detail'; }
+      drawer.classList.add('wide');
+    }
+  }
+}
+
+async function saveNoteEdit(iso){
+  const code = String(iso||'').toUpperCase();
+  const ta = document.getElementById('noteEditor');
+  if(!ta || !code) return;
+  const saveBtn = document.querySelector('#mdNote [data-note-action="save"]');
+  const cancelBtn = document.querySelector('#mdNote [data-note-action="cancel"]');
+  if(saveBtn){ saveBtn.disabled=true; saveBtn.textContent='Saving…'; }
+  if(cancelBtn) cancelBtn.disabled=true;
+  setNoteStatus('Saving…', 'work');
+  COUNTRY_MARKDOWN[code] = ta.value;
+  const ok = await saveData(code, 'manual');
+  const f = world && world.find(ft=>featISO(ft)===code);
+  if(f){
+    const wasWide = drawer.classList.contains('wide');
+    openDrawer(f);
+    const d=document.getElementById('detailBlock'), b=document.getElementById('expandBtn');
+    if(d && (wasWide || recordFor(f))){
+      d.classList.add('open');
+      if(b){ b.classList.add('open'); b.querySelector('span').textContent='Hide full detail'; }
+      drawer.classList.add('wide');
+    }
+  }
+  setNoteStatus(
+    ok ? 'Saved — will persist across deployments.' : 'Saved in this browser only — Neon unreachable.',
+    ok ? 'ok' : 'err'
+  );
 }
 
 /* Markdown -> HTML. Uses marked if present; otherwise a small fallback.
@@ -666,8 +760,18 @@ drawerEl.addEventListener('drop', e=>{
   const f=e.dataTransfer.files && e.dataTransfer.files[0];
   handleUpload(f, dz.dataset.iso);
 });
-// also allow click-to-pick
+// Note edit toolbar + click-to-pick on dropzone (delegation; panel is rebuilt often)
 drawerEl.addEventListener('click', e=>{
+  const noteBtn=e.target.closest('[data-note-action]');
+  if(noteBtn){
+    e.preventDefault();
+    const action=noteBtn.dataset.noteAction;
+    const iso=noteBtn.dataset.iso;
+    if(action==='edit') startNoteEdit(iso);
+    else if(action==='cancel') cancelNoteEdit(iso);
+    else if(action==='save') saveNoteEdit(iso);
+    return;
+  }
   const dz=e.target.closest('#dropzone'); if(!dz) return;
   const inp=document.createElement('input'); inp.type='file'; inp.accept='.md,.markdown,.txt,.pdf';
   inp.onchange=()=>handleUpload(inp.files[0], dz.dataset.iso); inp.click();
