@@ -1,6 +1,15 @@
 {
+  "functions": {
+    "api/claude.js": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  },
   "rewrites": [
     { "source": "/", "destination": "/pulse/index.html" },
-    { "source": "/((?!api/).*)", "destination": "/pulse/$1" }
+    {
+      "source": "/((?!api/|config\\.js|Order).*)",
+      "destination": "/pulse/$1"
+    }
   ]
 }

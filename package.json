@@ -1,0 +1,13 @@
+{
+  "name": "calastone-network-vis",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Calastone Pulse — static tools + Anthropic API proxy",
+  "scripts": {
+    "dev": "node scripts/local-pulse-server.js",
+    "start": "node scripts/local-pulse-server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

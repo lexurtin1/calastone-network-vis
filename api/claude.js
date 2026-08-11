@@ -1,9 +1,21 @@
 // Proxies Anthropic Messages API using server-side ANTHROPIC_API_KEY.
 // Keeps the key out of the browser bundle / config.js.
 
+function readKey() {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || apiKey === 'PASTE-YOUR-KEY-HERE') return null;
+  return apiKey;
+}
+
+function sendJson(res, status, payload) {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(payload));
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
@@ -12,36 +24,43 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  if (req.method !== 'POST') {
-    res.statusCode = 405;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: { message: 'Method not allowed' } }));
+  // Lightweight health check — never returns the key.
+  if (req.method === 'GET') {
+    sendJson(res, 200, {
+      ok: true,
+      keyConfigured: !!readKey(),
+      model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
+    });
     return;
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey || apiKey === 'PASTE-YOUR-KEY-HERE') {
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({
-      error: { message: 'ANTHROPIC_API_KEY is not set on the server. Add it in Vercel env or .env.local.' }
-    }));
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: { message: 'Method not allowed' } });
+    return;
+  }
+
+  const apiKey = readKey();
+  if (!apiKey) {
+    sendJson(res, 500, {
+      error: {
+        message:
+          'ANTHROPIC_API_KEY is not set on the server. Add it in Vercel Project Settings → Environment Variables (Production + Preview), or in .env.local for local use with `npm run dev`.',
+      },
+    });
     return;
   }
 
   let body = req.body;
   if (typeof body === 'string') {
-    try { body = JSON.parse(body); } catch (_) {
-      res.statusCode = 400;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: { message: 'Invalid JSON body' } }));
+    try {
+      body = JSON.parse(body);
+    } catch (_) {
+      sendJson(res, 400, { error: { message: 'Invalid JSON body' } });
       return;
     }
   }
   if (!body || typeof body !== 'object') {
-    res.statusCode = 400;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: { message: 'Request body required' } }));
+    sendJson(res, 400, { error: { message: 'Request body required' } });
     return;
   }
 
@@ -65,10 +84,8 @@ module.exports = async function handler(req, res) {
     res.end(text);
   } catch (err) {
     console.error('Anthropic proxy failed:', err);
-    res.statusCode = 502;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({
-      error: { message: err.message || 'Upstream request failed' }
-    }));
+    sendJson(res, 502, {
+      error: { message: err.message || 'Upstream request failed' },
+    });
   }
 };
