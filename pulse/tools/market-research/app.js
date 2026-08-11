@@ -765,6 +765,7 @@ drawerEl.addEventListener('click', e=>{
   const noteBtn=e.target.closest('[data-note-action]');
   if(noteBtn){
     e.preventDefault();
+    e.stopPropagation();
     const action=noteBtn.dataset.noteAction;
     const iso=noteBtn.dataset.iso;
     if(action==='edit') startNoteEdit(iso);
@@ -773,6 +774,7 @@ drawerEl.addEventListener('click', e=>{
     return;
   }
   const dz=e.target.closest('#dropzone'); if(!dz) return;
+  if(e.target.closest('button')) return;
   const inp=document.createElement('input'); inp.type='file'; inp.accept='.md,.markdown,.txt,.pdf';
   inp.onchange=()=>handleUpload(inp.files[0], dz.dataset.iso); inp.click();
 });
