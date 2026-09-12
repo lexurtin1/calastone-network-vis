@@ -1450,7 +1450,7 @@ function startNoteEdit(iso){
 
 function cancelNoteEdit(iso){
   const code = String(iso||'').toUpperCase();
-  const f = world && world.find(ft=>featISO(ft)===code);
+  const f = featureForISO(code);
   if(!f) return;
   const wasWide = drawer.classList.contains('wide');
   const detailOpen = !!(document.getElementById('detailBlock') && document.getElementById('detailBlock').classList.contains('open'));
@@ -1476,7 +1476,7 @@ async function saveNoteEdit(iso){
   setNoteStatus('Saving…', 'work');
   COUNTRY_MARKDOWN[code] = ta.value;
   const ok = await saveData(code, 'manual');
-  const f = world && world.find(ft=>featISO(ft)===code);
+  const f = featureForISO(code);
   if(f){
     const wasWide = drawer.classList.contains('wide');
     openDrawer(f);
@@ -1604,7 +1604,7 @@ function setStatus(msg, cls){
 
 async function handleUpload(file, iso){
   if(!file){ return; }
-  if(!iso){ setStatus('This country has no ISO code mapped — add it to NAME_TO_ISO first.', 'err'); return; }
+  if(!iso){ setStatus('The globe could not resolve an ISO code for this shape.', 'err'); return; }
   const isPdf=/\.pdf$/i.test(file.name);
   const isText=/\.(md|markdown|txt)$/i.test(file.name);
   if(!isPdf && !isText){ setStatus('Please drop a Markdown (.md), text, or PDF file.', 'err'); return; }
@@ -2156,7 +2156,7 @@ document.getElementById('modalApply').addEventListener('click',()=>{
     saveData(iso, 'claude');     // persist to Neon + local cache
     refreshGlobe();              // recolour the globe now that the record exists
     afterFilter();              // refresh counts/legend
-    const f=world.find(ft=>featISO(ft)===iso);
+    const f=featureForISO(iso);
     if(f) openDrawer(f);        // reopen as a full profiled panel
     setStatus('Profile and note created for this country.', 'ok');
     return;
@@ -2178,7 +2178,7 @@ document.getElementById('modalApply').addEventListener('click',()=>{
   saveData(iso, 'claude');       // persist to Neon + local cache
   if(profileApplied){ refreshGlobe(); afterFilter(); }
   closeModal();
-  const f=world.find(ft=>featISO(ft)===iso);
+  const f=featureForISO(iso);
   if(f){ const wasWide=drawer.classList.contains('wide'); openDrawer(f);
     if(wasWide){ toggleDetail(); } }
   setStatus(profileApplied
@@ -2237,7 +2237,43 @@ function opportunityScaleHtml(){
       <div class="scale-ends"><span>Weaker opportunity</span><span>Stronger</span></div>
     </div>`;
 }
-function refreshGlobe(){if(!globe)return;globe.polygonCapColor(polyCapColor).polygonStrokeColor(polyStrokeColor).polygonAltitude(polyAltitude);}
+function refreshGlobe(){
+  if(!globe)return;
+  globe.polygonCapColor(polyCapColor).polygonStrokeColor(polyStrokeColor).polygonAltitude(polyAltitude);
+  // A market researched in this session may be a point-only jurisdiction,
+  // so the set itself is rebuilt here rather than only at boot.
+  const before=OFFSHORE_FEATURES.length;
+  rebuildOffshoreFeatures();
+  if(OFFSHORE_FEATURES.length!==before) globe.pointsData(OFFSHORE_FEATURES);
+  globe.pointColor(pointCapColor).pointAltitude(pointAltitude).pointRadius(pointRadius);
+}
+
+/* Points share the polygon colour logic so the two layers read as one
+   map, but a point is a few pixels wide — it is kept fully opaque and
+   given a visible lift so it does not disappear against the globe. */
+function pointCapColor(f){
+  const rec=recordFor(f);
+  if(!passesFilters(rec)) return 'rgba(150,170,186,0.35)';
+  let col;
+  if(!rec) col=C.unknown;
+  else if(MODE==='opportunity')col=scoreColor(rec.opportunity_score);
+  else if(MODE==='hub')col=hubColor(rec.central_hub_status);
+  else if(MODE==='automation')col=scoreColorInv(rec.automation_rate_estimate);
+  else col=classColor(rec.market_classification);
+  return hexA(col||C.none, 1);
+}
+function pointAltitude(f){
+  const rec=recordFor(f);
+  if(rec&&rec.iso3===selectedISO)return 0.085;
+  if(f.__hover)return 0.06;
+  return 0.02;
+}
+function pointRadius(f){
+  const rec=recordFor(f);
+  if(rec&&rec.iso3===selectedISO)return 0.85;
+  if(f.__hover)return 0.8;
+  return passesFilters(rec)?0.62:0.45;
+}
 
 function uniq(field){const s=new Set();Object.values(COUNTRY_DATA).forEach(r=>{if(r[field])s.add(r[field]);});return[...s].sort();}
 function fillSelect(id,vals){const sel=document.getElementById(id);vals.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;sel.appendChild(o);});}
@@ -2278,8 +2314,16 @@ sugEl.addEventListener('click',e=>{const row=e.target.closest('.row[data-iso]');
 document.addEventListener('click',e=>{if(!e.target.closest('.search-wrap'))sugEl.classList.remove('open');});
 searchEl.addEventListener('keydown',e=>{if(e.key==='Enter'){const f=sugEl.querySelector('.row[data-iso]');if(f){flyToISO(f.dataset.iso);sugEl.classList.remove('open');searchEl.value='';}}});
 
-function centroid(f){let lats=[],lngs=[];const g=f.geometry;if(!g)return null;const polys=g.type==='Polygon'?[g.coordinates]:g.coordinates;polys.forEach(p=>p[0].forEach(c=>{lngs.push(c[0]);lats.push(c[1]);}));if(!lats.length)return null;return{lat:(Math.min(...lats)+Math.max(...lats))/2,lng:(Math.min(...lngs)+Math.max(...lngs))/2};}
-function flyToISO(iso){const f=world.find(ft=>featISO(ft)===iso);if(!f)return;selectedISO=iso;const c=centroid(f);if(c)globe.pointOfView({lat:c.lat,lng:c.lng,altitude:1.7},1100);refreshGlobe();openDrawer(f);}
+function centroid(f){if(f&&f.__offshore)return{lat:f.lat,lng:f.lng};let lats=[],lngs=[];const g=f.geometry;if(!g)return null;const polys=g.type==='Polygon'?[g.coordinates]:g.coordinates;polys.forEach(p=>p[0].forEach(c=>{lngs.push(c[0]);lats.push(c[1]);}));if(!lats.length)return null;return{lat:(Math.min(...lats)+Math.max(...lats))/2,lng:(Math.min(...lngs)+Math.max(...lngs))/2};}
+function flyToISO(iso){
+  const f=featureForISO(iso);
+  if(!f)return;
+  selectedISO=featISO(f);
+  const c=centroid(f);
+  if(c&&globe)globe.pointOfView({lat:c.lat,lng:c.lng,altitude:f.__offshore?1.1:1.7},1100);
+  refreshGlobe();
+  openDrawer(f);
+}
 
 document.getElementById('modeSeg').addEventListener('click',e=>{const b=e.target.closest('button[data-mode]');if(!b)return;document.querySelectorAll('#modeSeg button').forEach(x=>x.classList.remove('active'));b.classList.add('active');MODE=b.dataset.mode;renderLegend();refreshGlobe();});
 document.getElementById('filterBtn').addEventListener('click',()=>{const p=document.getElementById('filterPanel');const o=p.classList.toggle('open');document.getElementById('filterBtn').classList.toggle('active',o);});
@@ -2292,18 +2336,23 @@ document.getElementById('loadBtn').addEventListener('click',()=>{
 fetch('https://unpkg.com/world-atlas@2.0.2/countries-110m.json').then(r=>r.json()).then(async topology=>{
   const geo=topojson.feature(topology,topology.objects.countries);
   world=geo.features;
-  world.forEach(f=>{f.iso_a3=NAME_TO_ISO[f.properties.name]||null;});
+  world.forEach(f=>{f.iso_a3=isoForFeature(f);});
+  POLYGON_ISOS=new Set(world.map(f=>f.iso_a3).filter(Boolean));
   recalculateAllOpportunities(); // score the bundled defaults before any cache/DB overlay
   loadSavedData();   // local cache first for fast paint
   const fromDb = await loadAtlasFromDb(); // Neon wins when reachable
   if(!STORAGE_OK && !fromDb) showSaveBanner();
+  rebuildOffshoreFeatures(); // after the DB overlay, so its markets get points too
   globe=Globe()(document.getElementById('globeViz'))
     .backgroundColor('rgba(0,0,0,0)')
     .showAtmosphere(true).atmosphereColor('#7fb8d8').atmosphereAltitude(0.16)
     .showGlobe(true)
     .polygonsData(world).polygonAltitude(polyAltitude).polygonCapColor(polyCapColor)
     .polygonSideColor(polySideColor).polygonStrokeColor(polyStrokeColor)
-    .polygonsTransitionDuration(300).onPolygonHover(handleHover).onPolygonClick(handleClick);
+    .polygonsTransitionDuration(300).onPolygonHover(handleHover).onPolygonClick(handleClick)
+    .pointsData(OFFSHORE_FEATURES).pointLat('lat').pointLng('lng')
+    .pointColor(pointCapColor).pointAltitude(pointAltitude).pointRadius(pointRadius)
+    .pointsTransitionDuration(300).onPointHover(handleHover).onPointClick(handleClick);
   const m=globe.globeMaterial();m.color=new THREE.Color('#eaf1f6');m.emissive=new THREE.Color('#dce8f0');m.emissiveIntensity=0.4;m.shininess=0.5;
   const ctr=globe.controls();ctr.autoRotate=true;ctr.autoRotateSpeed=0.32;ctr.enableDamping=true;ctr.dampingFactor=0.08;ctr.minDistance=160;ctr.maxDistance=600;
   let ui=false;function stop(){if(!ui){ctr.autoRotate=false;ui=true;}}
@@ -2513,15 +2562,119 @@ async function sendChat(){
   }
 }
 
-/* NAME -> ISO3 (world-atlas exposes only country names) */
-const NAME_TO_ISO={
-  "United Kingdom":"GBR","Australia":"AUS","Brazil":"BRA","Singapore":"SGP","Hong Kong":"HKG",
-  "Japan":"JPN","United States of America":"USA","United States":"USA","Luxembourg":"LUX","India":"IND",
-  "Germany":"DEU","South Africa":"ZAF","United Arab Emirates":"ARE","Switzerland":"CHE",
-  "France":"FRA","Italy":"ITA","Spain":"ESP","Netherlands":"NLD","Ireland":"IRL","Canada":"CAN",
-  "Mexico":"MEX","China":"CHN","South Korea":"KOR","Taiwan":"TWN","Thailand":"THA","Malaysia":"MYS",
-  "Indonesia":"IDN","Philippines":"PHL","Vietnam":"VNM","New Zealand":"NZL","Sweden":"SWE","Norway":"NOR",
-  "Denmark":"DNK","Finland":"FIN","Belgium":"BEL","Austria":"AUT","Portugal":"PRT","Poland":"POL",
-  "Saudi Arabia":"SAU","Qatar":"QAT","Israel":"ISR","Turkey":"TUR","Egypt":"EGY","Nigeria":"NGA",
-  "Kenya":"KEN","Argentina":"ARG","Chile":"CHL","Colombia":"COL","Peru":"PER"
+/* ================================================================
+   ============   GLOBE FEATURE -> ISO3 RESOLUTION   =============
+   ================================================================
+   Every record lives in Neon; this is only the lookup that ties a
+   record to the shape on the globe. It used to be a hand-kept list of
+   the ~48 markets that had been researched, which meant a market
+   could be fully written up in Neon and still render as "Profile not
+   yet completed" on any machine, because nobody had added its name
+   here. The list is now complete and keyed on the numeric M49 id that
+   world-atlas puts on every feature, so it never needs editing again:
+   the id is stable where the display name is not ("Czech Republic"
+   became "Czechia", "Swaziland" became "eSwatini"). */
+const ID_TO_ISO={
+  "004":"AFG","024":"AGO","008":"ALB","784":"ARE","032":"ARG","051":"ARM","010":"ATA","260":"ATF",
+  "036":"AUS","040":"AUT","031":"AZE","108":"BDI","056":"BEL","204":"BEN","854":"BFA","050":"BGD",
+  "100":"BGR","044":"BHS","070":"BIH","112":"BLR","084":"BLZ","068":"BOL","076":"BRA","096":"BRN",
+  "064":"BTN","072":"BWA","140":"CAF","124":"CAN","756":"CHE","152":"CHL","156":"CHN","384":"CIV",
+  "120":"CMR","180":"COD","178":"COG","170":"COL","188":"CRI","192":"CUB","196":"CYP","203":"CZE",
+  "276":"DEU","262":"DJI","208":"DNK","214":"DOM","012":"DZA","218":"ECU","818":"EGY","232":"ERI",
+  "732":"ESH","724":"ESP","233":"EST","231":"ETH","246":"FIN","242":"FJI","238":"FLK","250":"FRA",
+  "266":"GAB","826":"GBR","268":"GEO","288":"GHA","324":"GIN","270":"GMB","624":"GNB","226":"GNQ",
+  "300":"GRC","304":"GRL","320":"GTM","328":"GUY","340":"HND","191":"HRV","332":"HTI","348":"HUN",
+  "360":"IDN","356":"IND","372":"IRL","364":"IRN","368":"IRQ","352":"ISL","376":"ISR","380":"ITA",
+  "388":"JAM","400":"JOR","392":"JPN","398":"KAZ","404":"KEN","417":"KGZ","116":"KHM","410":"KOR",
+  "414":"KWT","418":"LAO","422":"LBN","430":"LBR","434":"LBY","144":"LKA","426":"LSO","440":"LTU",
+  "442":"LUX","428":"LVA","504":"MAR","498":"MDA","450":"MDG","484":"MEX","807":"MKD","466":"MLI",
+  "104":"MMR","499":"MNE","496":"MNG","508":"MOZ","478":"MRT","454":"MWI","458":"MYS","516":"NAM",
+  "540":"NCL","562":"NER","566":"NGA","558":"NIC","528":"NLD","578":"NOR","524":"NPL","554":"NZL",
+  "512":"OMN","586":"PAK","591":"PAN","604":"PER","608":"PHL","598":"PNG","616":"POL","630":"PRI",
+  "408":"PRK","620":"PRT","600":"PRY","275":"PSE","634":"QAT","642":"ROU","643":"RUS","646":"RWA",
+  "682":"SAU","729":"SDN","686":"SEN","090":"SLB","694":"SLE","222":"SLV","706":"SOM","688":"SRB",
+  "728":"SSD","740":"SUR","703":"SVK","705":"SVN","752":"SWE","748":"SWZ","760":"SYR","148":"TCD",
+  "768":"TGO","764":"THA","762":"TJK","795":"TKM","626":"TLS","780":"TTO","788":"TUN","792":"TUR",
+  "158":"TWN","834":"TZA","800":"UGA","804":"UKR","858":"URY","840":"USA","860":"UZB","862":"VEN",
+  "704":"VNM","548":"VUT","887":"YEM","710":"ZAF","894":"ZMB","716":"ZWE"
 };
+
+/* Natural Earth ships three polygons with no id (disputed status), and
+   restyles display names between releases. Names are the fallback. */
+const NAME_TO_ISO={
+  "Kosovo":"XKX","N. Cyprus":"CYP","Somaliland":"SOM",
+  "United States":"USA","United States of America":"USA",
+  "Czechia":"CZE","Czech Republic":"CZE","South Korea":"KOR","Korea":"KOR",
+  "North Korea":"PRK","Macedonia":"MKD","North Macedonia":"MKD","Swaziland":"SWZ","eSwatini":"SWZ",
+  "Bosnia and Herz.":"BIH","Dem. Rep. Congo":"COD","Central African Rep.":"CAF",
+  "Dominican Rep.":"DOM","Eq. Guinea":"GNQ","S. Sudan":"SSD","Solomon Is.":"SLB",
+  "Timor-Leste":"TLS","W. Sahara":"ESH","Falkland Is.":"FLK","Fr. S. Antarctic Lands":"ATF",
+  "Côte d'Ivoire":"CIV","Ivory Coast":"CIV","Myanmar":"MMR","Burma":"MMR",
+  "Cape Verde":"CPV","Brunei":"BRN","Brunei Darussalam":"BRN"
+};
+
+function isoForFeature(f){
+  if(!f) return null;
+  if(f.iso_a3) return f.iso_a3;
+  const p=f.properties||{};
+  return ID_TO_ISO[String(f.id)] || NAME_TO_ISO[p.name] || null;
+}
+
+/* ================================================================
+   =============   JURISDICTIONS WITH NO POLYGON   ===============
+   ================================================================
+   world-atlas at 110m resolution has no shape for a territory below
+   roughly 1,000 km2, which removes most of the offshore fund centres
+   from the map entirely — Cayman, Jersey, Guernsey, the Isle of Man,
+   Malta, Gibraltar, Liechtenstein, Bermuda, Singapore and Hong Kong
+   are all absent. No name table can fix that; there is nothing to
+   name. They are drawn as points instead, and a point carries the
+   same record, tooltip and drawer as a polygon does.
+
+   Coordinates are the jurisdiction's financial centre. Adding one
+   here is optional — a market with neither a polygon nor a point is
+   still reachable from search, it just has no location on the globe. */
+const OFFSHORE_COORDS={
+  CYM:[19.30,-81.38], JEY:[49.19,-2.11], GGY:[49.46,-2.58], IMN:[54.15,-4.48],
+  MLT:[35.90,14.51], GIB:[36.14,-5.35], LIE:[47.14,9.52], MCO:[43.74,7.42],
+  AND:[42.51,1.52], SMR:[43.94,12.45], BMU:[32.29,-64.78], BRB:[13.10,-59.62],
+  BHS:[25.06,-77.35], VGB:[18.42,-64.62], AIA:[18.22,-63.07], TCA:[21.47,-71.14],
+  CUW:[12.17,-69.00], ABW:[12.52,-70.04], ATG:[17.06,-61.80], KNA:[17.30,-62.72],
+  LCA:[14.01,-60.99], VCT:[13.16,-61.22], GRD:[12.06,-61.75], DMA:[15.31,-61.38],
+  SGP:[1.29,103.85], HKG:[22.32,114.17], MAC:[22.20,113.54], BRN:[4.90,114.94],
+  MUS:[-20.16,57.50], SYC:[-4.62,55.45], MDV:[4.18,73.51], BHR:[26.23,50.59],
+  QAT:[25.29,51.53], LUX:[49.61,6.13], FRO:[62.01,-6.77], CPV:[14.93,-23.51],
+  STP:[0.34,6.73], VAT:[41.90,12.45], SXM:[18.03,-63.05], KIR:[1.33,172.98],
+  MHL:[7.09,171.38], FSM:[6.92,158.16], PLW:[7.50,134.62], NRU:[-0.55,166.92],
+  TUV:[-8.52,179.20], TON:[-21.14,-175.20], WSM:[-13.83,-171.77], COM:[-11.70,43.26]
+};
+
+/* Records the globe has no polygon for, rebuilt whenever the data
+   changes so a market researched today appears without a reload.
+   Shaped like a world-atlas feature on purpose: featISO, featName,
+   recordFor, showTooltip and openDrawer then all work unchanged. */
+let OFFSHORE_FEATURES=[];
+let POLYGON_ISOS=new Set();
+
+function rebuildOffshoreFeatures(){
+  OFFSHORE_FEATURES=Object.keys(COUNTRY_DATA)
+    .filter(iso=>!POLYGON_ISOS.has(iso) && OFFSHORE_COORDS[iso])
+    .map(iso=>({
+      iso_a3:iso, __offshore:true,
+      lat:OFFSHORE_COORDS[iso][0], lng:OFFSHORE_COORDS[iso][1],
+      properties:{ name:(COUNTRY_DATA[iso]&&COUNTRY_DATA[iso].country)||iso }
+    }));
+  return OFFSHORE_FEATURES;
+}
+
+/* A market with neither polygon nor point still has to open from
+   search, so hand back something openDrawer can render. */
+function featureForISO(iso){
+  const code=String(iso||'').toUpperCase();
+  const poly=world&&world.find(f=>featISO(f)===code);
+  if(poly) return poly;
+  const pt=OFFSHORE_FEATURES.find(f=>f.iso_a3===code);
+  if(pt) return pt;
+  const rec=COUNTRY_DATA[code];
+  return rec?{iso_a3:code,__placeless:true,properties:{name:rec.country||code}}:null;
+}
